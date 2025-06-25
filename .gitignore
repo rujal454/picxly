@@ -1,16 +1,10 @@
-*
-!app.py
-!yolov8n.pt
-!.gitignore
-!requirements.txt
-requirements.txt <<'EOF'
-streamlit==1.35.0
-opencv-python-headless
+streamlit>=1.33.0
+opencv-python-headless>=4.8.1.78
 numpy
-pillow
-insightface
+Pillow
 scikit-learn
-mediapipe
-fer
-ultralytics
-EOF
+fer==22.5.1
+insightface==0.7.3
+onnxruntime==1.17.1
+protobuf==3.20.*
+mediapipe==0.10.9

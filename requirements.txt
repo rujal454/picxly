@@ -1,10 +1,10 @@
-
 streamlit>=1.33.0
-opencv-python-headless
+opencv-python-headless>=4.8.1.78
 numpy
 Pillow
 scikit-learn
-mediapipe
 fer==23.9.0
-onnxruntime
 insightface==0.7.3
+onnxruntime==1.17.1
+protobuf==3.20.*
+mediapipe==0.10.9

@@ -7,7 +7,7 @@ import zipfile
 from PIL import Image
 from insightface.app import FaceAnalysis
 from sklearn.preprocessing import normalize
-import mediapipe as mp
+from mediapipe.python.solutions import face_mesh as mp_face_mesh
 from typing import Optional, Tuple
 from ultralytics import YOLO
 
@@ -21,7 +21,7 @@ st.set_page_config(page_title="🔍 Picxly – Face & Object Search")
 
 
 CLOSED_EYE_THRESHOLD = 0.21
-BLUR_THRESHOLD = 100.0
+BLUR_THRESHOLD = 60.0
 SIM_THRESHOLD = 0.50      # webcam 50 %
 PERFECT_THRESHOLD = 0.9999 # file‑upload 100 %
 
@@ -40,7 +40,6 @@ def load_yolo():
 face_app = load_face_model()
 yolo_model = load_yolo()
 
-mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, refine_landmarks=True, max_num_faces=1)
 
 os.makedirs("data/gallery", exist_ok=True)
@@ -56,15 +55,56 @@ def load_fer_optional():
 
 emotion_detector_opt = load_fer_optional()
 
-# Optional emotion detection wrapper
-def detect_emotion_optional(face_rgb) -> Optional[Tuple[str, float]]:
-    if emotion_detector_opt is None:
+# Lightweight TF-free emotion based on Face Mesh landmarks
+def _euclid(a, b):
+    return float(np.linalg.norm(np.array(a) - np.array(b)))
+
+def _mesh_points(image_rgb, indices):
+    res = face_mesh.process(image_rgb)
+    if not res.multi_face_landmarks:
         return None
-    res = emotion_detector_opt.detect_emotions(face_rgb)
-    if res:
-        emo = max(res[0]["emotions"], key=res[0]["emotions"].get)
-        return emo, float(res[0]["emotions"][emo])
-    return None
+    lm = res.multi_face_landmarks[0]
+    h, w = image_rgb.shape[:2]
+    pts = []
+    for i in indices:
+        p = lm.landmark[i]
+        pts.append((p.x * w, p.y * h))
+    return pts
+
+def detect_emotion_lite(face_rgb) -> Optional[Tuple[str, float]]:
+    # Indices: mouth corners (61, 291), upper/lower lip (13, 14)
+    idx = [61, 291, 13, 14]
+    pts = _mesh_points(face_rgb, idx)
+    if pts is None:
+        return None
+    left, right, up, down = pts
+    face_w = float(face_rgb.shape[1]) if face_rgb is not None else 1.0
+    if face_w <= 0:
+        face_w = 1.0
+    mouth_width = _euclid(left, right)
+    mouth_open = _euclid(up, down)
+    # Ratios normalized by face width for robustness
+    open_ratio = mouth_open / max(1e-6, face_w)
+    smile_ratio = mouth_width / max(1e-6, face_w)
+
+    # Heuristic thresholds (empirical)
+    if open_ratio > 0.12:
+        return ("Surprised", min(1.0, (open_ratio - 0.12) / 0.15))
+    if smile_ratio > 0.42 and open_ratio < 0.08:
+        return ("Happy", min(1.0, (smile_ratio - 0.42) / 0.20))
+    return ("Neutral", 0.5)
+
+# Optional emotion detection wrapper (prefers FER if installed, else lite)
+def detect_emotion_optional(face_rgb) -> Optional[Tuple[str, float]]:
+    if emotion_detector_opt is not None:
+        try:
+            res = emotion_detector_opt.detect_emotions(face_rgb)
+            if res:
+                emo = max(res[0]["emotions"], key=res[0]["emotions"].get)
+                return emo, float(res[0]["emotions"][emo])
+        except Exception:
+            pass
+    return detect_emotion_lite(face_rgb)
 
 # ─── Index Helpers ─────────────────────────────────────────
 
@@ -128,7 +168,14 @@ def eyes_closed(img):
 # ─── Misc util ─────────────────────────────────
 
 def blur_var(img):
-    return cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Normalize size to make variance comparable across crops
+    h, w = gray.shape[:2]
+    target = 256
+    if min(h, w) > 0 and min(h, w) < target:
+        scale = target / float(min(h, w))
+        gray = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 # ─── SIDEBAR ────────────────────────────────
 mode = st.sidebar.radio("Mode", ["Face Search", "Object Detection"])
@@ -155,13 +202,17 @@ if mode == "Face Search":
     if up:
         img = cv2.imdecode(np.frombuffer(up.read(), np.uint8), 1)
         st.image(img, caption="Uploaded", channels="BGR")
-        if blur_var(img) < BLUR_THRESHOLD:
-            st.warning("🚫 Image looks blurry")
-            st.stop()
+        # Always run search; only warn if blurry (do not stop)
         bbox, matches = search_face(img)
         if bbox is None:
             st.warning("No face detected or index empty.")
         else:
+            # Compute blur on detected face crop if possible; otherwise on full image
+            x1, y1, x2, y2 = map(int, bbox)
+            crop = img[y1:y2, x1:x2]
+            bv = blur_var(crop if crop.size else img)
+            if bv < BLUR_THRESHOLD:
+                st.info(f"⚠️ Image looks blurry (variance {bv:.1f} < {BLUR_THRESHOLD:.1f}). Results may be less accurate.")
             perfect = [(s, f) for s, f in matches if s >= PERFECT_THRESHOLD]
             if perfect:
                 st.subheader("🟢 100 % Identical Faces")
@@ -169,7 +220,6 @@ if mode == "Face Search":
                     st.image(os.path.join("data/gallery", fname), caption=f"Sim {s:.4f}")
             else:
                 st.info("No exact matches.")
-            x1, y1, x2, y2 = map(int, bbox)
             st.write(":eye: Closed" if eyes_closed(img) else ":eye: Open")
             if st.checkbox("Show emotion", value=False, key="emo_upload"):
                 face_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
@@ -194,6 +244,33 @@ if mode == "Face Search":
                     st.image(os.path.join("data/gallery", fname), caption=f"Sim {s:.2f}")
             x1, y1, x2, y2 = map(int, bbox)
             st.write(":eye: Closed" if eyes_closed(img) else ":eye: Open")
+
+    st.subheader("📂 Batch Analyze (multi-file)")
+    batch_files = st.file_uploader("Drop multiple images", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="batch")
+    if batch_files:
+        imgs = []
+        metas = []
+        for f in batch_files:
+            arr = np.frombuffer(f.read(), np.uint8)
+            img = cv2.imdecode(arr, 1)
+            if img is None:
+                continue
+            imgs.append(img)
+            metas.append(f.name)
+        if not imgs:
+            st.warning("No valid images.")
+        else:
+            cols = st.columns(3)
+            for i, (img, name) in enumerate(zip(imgs, metas)):
+                bbox, matches = search_face(img)
+                eye_txt = ":eye: Closed" if eyes_closed(img) else ":eye: Open"
+                sim_txt = "No match"
+                if matches:
+                    s, fname = matches[0]
+                    sim_txt = f"Top match {s:.2f} → {fname}"
+                with cols[i % 3]:
+                    st.image(img, caption=name, channels="BGR")
+                    st.caption(f"{sim_txt} · {eye_txt}")
             if st.checkbox("Show emotion (webcam)", value=False, key="emo_cam"):
                 face_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
                 emo = detect_emotion_optional(face_rgb)

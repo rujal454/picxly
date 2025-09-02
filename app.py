@@ -8,6 +8,7 @@ from PIL import Image
 from insightface.app import FaceAnalysis
 from sklearn.preprocessing import normalize
 import mediapipe as mp
+from typing import Optional, Tuple
 from ultralytics import YOLO
 
 """
@@ -43,6 +44,27 @@ mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, refine_landmarks=True, max_num_faces=1)
 
 os.makedirs("data/gallery", exist_ok=True)
+
+# ─── Optional Emotions (safe import) ─────────────────────────────
+@st.cache_resource
+def load_fer_optional():
+    try:
+        from fer import FER  # type: ignore
+        return FER(mtcnn=True)
+    except Exception:
+        return None
+
+emotion_detector_opt = load_fer_optional()
+
+# Optional emotion detection wrapper
+def detect_emotion_optional(face_rgb) -> Optional[Tuple[str, float]]:
+    if emotion_detector_opt is None:
+        return None
+    res = emotion_detector_opt.detect_emotions(face_rgb)
+    if res:
+        emo = max(res[0]["emotions"], key=res[0]["emotions"].get)
+        return emo, float(res[0]["emotions"][emo])
+    return None
 
 # ─── Index Helpers ─────────────────────────────────────────
 
@@ -149,6 +171,14 @@ if mode == "Face Search":
                 st.info("No exact matches.")
             x1, y1, x2, y2 = map(int, bbox)
             st.write(":eye: Closed" if eyes_closed(img) else ":eye: Open")
+            if st.checkbox("Show emotion", value=False, key="emo_upload"):
+                face_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
+                emo = detect_emotion_optional(face_rgb)
+                if emo is None:
+                    st.info("Emotion model not installed. In venv: pip install fer moviepy imageio-ffmpeg")
+                else:
+                    name, conf = emo
+                    st.write(f"Emotion: {name} ({conf:.0%})")
 
     st.subheader("📸 Webcam Face Search (≥ 50 %)")
     frame = st.camera_input("Snap", key="camfs")
@@ -164,6 +194,14 @@ if mode == "Face Search":
                     st.image(os.path.join("data/gallery", fname), caption=f"Sim {s:.2f}")
             x1, y1, x2, y2 = map(int, bbox)
             st.write(":eye: Closed" if eyes_closed(img) else ":eye: Open")
+            if st.checkbox("Show emotion (webcam)", value=False, key="emo_cam"):
+                face_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
+                emo = detect_emotion_optional(face_rgb)
+                if emo is None:
+                    st.info("Emotion model not installed. In venv: pip install fer moviepy imageio-ffmpeg")
+                else:
+                    name, conf = emo
+                    st.write(f"Emotion: {name} ({conf:.0%})")
 
 # ─── OBJECT DETECTION ─────────────────────────────────
 if mode == "Object Detection":

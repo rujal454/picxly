@@ -8,7 +8,6 @@ from PIL import Image
 from insightface.app import FaceAnalysis
 from sklearn.preprocessing import normalize
 import mediapipe as mp
-from fer import FER
 from ultralytics import YOLO
 
 """
@@ -32,16 +31,12 @@ def load_face_model():
     app.prepare(ctx_id=0, det_size=(640, 640))  # CPU
     return app
 
-@st.cache_resource
-def load_fer():
-    return FER(mtcnn=True)
 
 @st.cache_resource
 def load_yolo():
     return YOLO("yolov8n.pt")
 
 face_app = load_face_model()
-emotion_detector = load_fer()
 yolo_model = load_yolo()
 
 mp_face_mesh = mp.solutions.face_mesh
@@ -90,14 +85,7 @@ def search_face(img: np.ndarray, top_k=5):
     sims.sort(reverse=True)
     return best.bbox, sims[:top_k]
 
-# ─── Emotion / Blink helpers ─────────────────────────────────
-
-def detect_emotion(face_rgb):
-    res = emotion_detector.detect_emotions(face_rgb)
-    if res:
-        emo = max(res[0]["emotions"], key=res[0]["emotions"].get)
-        return emo, res[0]["emotions"][emo]
-    return "Unknown", 0.0
+# ─── Blink helpers ─────────────────────────────────
 
 def ear(pts):
     d = lambda a, b: np.linalg.norm(np.array(a) - np.array(b))
@@ -160,9 +148,6 @@ if mode == "Face Search":
             else:
                 st.info("No exact matches.")
             x1, y1, x2, y2 = map(int, bbox)
-            face_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
-            emo, conf = detect_emotion(face_rgb)
-            st.write(f"Emotion: {emo} ({conf:.0%})")
             st.write(":eye: Closed" if eyes_closed(img) else ":eye: Open")
 
     st.subheader("📸 Webcam Face Search (≥ 50 %)")
@@ -178,9 +163,6 @@ if mode == "Face Search":
                 for s, fname in good:
                     st.image(os.path.join("data/gallery", fname), caption=f"Sim {s:.2f}")
             x1, y1, x2, y2 = map(int, bbox)
-            face_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
-            emo, conf = detect_emotion(face_rgb)
-            st.write(f"Emotion: {emo} ({conf:.0%})")
             st.write(":eye: Closed" if eyes_closed(img) else ":eye: Open")
 
 # ─── OBJECT DETECTION ─────────────────────────────────

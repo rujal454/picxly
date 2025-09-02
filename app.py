@@ -6,7 +6,6 @@ import pickle
 import zipfile
 from PIL import Image
 from insightface.app import FaceAnalysis
-from sklearn.preprocessing import normalize
 from mediapipe.python.solutions import face_mesh as mp_face_mesh
 from typing import Optional, Tuple
 from ultralytics import YOLO
@@ -108,6 +107,11 @@ def detect_emotion_optional(face_rgb) -> Optional[Tuple[str, float]]:
 
 # ─── Index Helpers ─────────────────────────────────────────
 
+def l2_normalize(vec: np.ndarray) -> np.ndarray:
+    v = vec.astype(np.float32).reshape(-1)
+    n = float(np.linalg.norm(v))
+    return v / (n + 1e-12)
+
 def build_index_from_folder(folder="data/gallery"):
     idx = []
     for fn in os.listdir(folder):
@@ -118,7 +122,7 @@ def build_index_from_folder(folder="data/gallery"):
         for f in face_app.get(img):
             if f.det_score < 0.6:
                 continue
-            emb = normalize(f.embedding.reshape(1, -1))[0]
+            emb = l2_normalize(f.embedding)
             idx.append({"image": fn, "embedding": emb})
     with open("data/index.pkl", "wb") as f:
         pickle.dump(idx, f)
@@ -142,7 +146,7 @@ def search_face(img: np.ndarray, top_k=5):
     best = max(faces, key=lambda f: f.det_score)
     if best.det_score < 0.6:
         return None, []
-    q = normalize(best.embedding.reshape(1, -1))[0]
+    q = l2_normalize(best.embedding)
     sims = [(np.dot(q, e["embedding"]), e["image"]) for e in index]
     sims.sort(reverse=True)
     return best.bbox, sims[:top_k]
